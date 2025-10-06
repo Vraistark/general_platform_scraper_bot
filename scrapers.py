@@ -1,6 +1,6 @@
 import re
 import asyncio
-import aiohttp
+import aiohttp # type: ignore
 from datetime import datetime
 
 # -- YouTube Scraper --
