@@ -1,16 +1,13 @@
 import os
 import io
 import csv
-import asyncio
 import logging
 import re
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, ConversationHandler, ContextTypes, filters
 )
-
 from scrapers import youtube_scraper, tikwm_scraper, dailymotion_scraper, okru_scraper, extract_domain
 
 logging.basicConfig(level=logging.INFO)
@@ -28,7 +25,7 @@ SELECT_PLATFORM, GET_URLS = range(2)
 
 URL_PATTERNS = {
     "YouTube": re.compile(
-        r"^(https?:\/\/)?(www\.)?((youtube\.com\/watch\?v=)|youtube\.com\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})(.*)?$"
+        r"^(https?:\/\/)?(www\.)?((youtube\.com\/watch\?v=)|youtube\.com\/shorts\/|youtu\.be\/)[a-zA-Z0-9_-]{11}($|&|/|\?)"
     ),
     "TikTok": re.compile(
         r"^(https?:\/\/)?(www\.)?tiktok\.com\/@[\w._-]+\/video\/\d+"
@@ -54,7 +51,9 @@ async def platform_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     platform = query.data
     context.user_data['platform'] = platform
-    await query.edit_message_text(f"Send me the list of URLs (one per line) for {platform}:")
+    await query.edit_message_text(
+        f"Send me the list of URLs (one per line) for {platform}:"
+    )
     return GET_URLS
 
 async def urls_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,17 +67,17 @@ async def urls_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if invalid_urls:
         await update.message.reply_text(
-            f"The following URLs are invalid for {platform_name}:\n" +
-            "\n".join(invalid_urls) +
-            "\nPlease send valid URLs only."
+            f"The following URLs are invalid for {platform_name}:\n"
+            + "\n".join(invalid_urls)
+            + "\nPlease send valid URLs only."
         )
         return GET_URLS
 
     await update.message.reply_text(f"Processing {len(urls)} URLs for {platform_name}... Please wait.")
 
+    # Special case for domain extractor
     if platform_name == "Domain Extractor":
         rows = [{"URL": url, "Domain": extract_domain(url)} for url in urls]
-
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=["URL", "Domain"])
         writer.writeheader()
@@ -87,10 +86,11 @@ async def urls_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_document(document=output, filename="domains.csv")
         return ConversationHandler.END
 
+    # For all platform scrapers
     try:
         results = await scraper_func(urls)
     except Exception as e:
-        logger.error(f"Error scraping {platform_name}: {e}")
+        logger.exception(f"Error scraping {platform_name}:")
         await update.message.reply_text(f"Error during scraping: {e}")
         return ConversationHandler.END
 
@@ -98,6 +98,7 @@ async def urls_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No data was scraped from the provided URLs.")
         return ConversationHandler.END
 
+    # CSV formatting
     first = results[0]
     if isinstance(first, dict):
         headers = list(first.keys())
@@ -133,9 +134,13 @@ def main():
         logger.error("Missing TELEGRAM_BOT_TOKEN environment variable.")
         return
 
+    # Create bot instance and ensure no webhook is set
     bot = Bot(token=TOKEN)
-    bot.delete_webhook()
-    logger.info("Webhook removed. Starting polling...")
+    try:
+        # Try to delete webhook before starting polling (ignore errors)
+        bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logger.info("Webhook deletion not required or failed gracefully.")
 
     app = ApplicationBuilder().token(TOKEN).build()
 
