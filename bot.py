@@ -22,10 +22,10 @@ PLATFORMS = {
 }
 
 TEMPLATE_FILES = {
-    "YouTube": "YouTube-Template.xlsx",
-    "TikTok": "UGC-Template.xlsx",
-    "Dailymotion": "UGC-Template.xlsx",
-    "Ok.ru": "UGC-Template.xlsx",
+    "YouTube": "templates/YouTube-Template.xlsx",
+    "TikTok": "templates/UGC-Template.xlsx",
+    "Dailymotion": "templates/UGC-Template.xlsx",
+    "Ok.ru": "templates/UGC-Template.xlsx",
 }
 
 SELECT_PLATFORM, GET_INPUT = range(2)
