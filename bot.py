@@ -1,6 +1,5 @@
 import os
 import io
-import csv
 import logging
 import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
@@ -8,6 +7,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, ConversationHandler, ContextTypes, filters
 )
+import openpyxl # type: ignore
 from scrapers import youtube_scraper, tikwm_scraper, dailymotion_scraper, okru_scraper, extract_domain
 
 logging.basicConfig(level=logging.INFO)
@@ -21,7 +21,14 @@ PLATFORMS = {
     "Domain Extractor": None,
 }
 
-SELECT_PLATFORM, GET_URLS = range(2)
+TEMPLATE_FILES = {
+    "YouTube": "YouTube-Template.xlsx",
+    "TikTok": "UGC-Template.xlsx",
+    "Dailymotion": "UGC-Template.xlsx",
+    "Ok.ru": "UGC-Template.xlsx",
+}
+
+SELECT_PLATFORM, GET_INPUT = range(2)
 
 URL_PATTERNS = {
     "YouTube": re.compile(
@@ -39,6 +46,59 @@ URL_PATTERNS = {
     "Domain Extractor": re.compile(r".*"),  # Accept any format
 }
 
+fields_mapping = {
+    "YouTube": {
+        "source_url": "A",
+        "title": "E",
+        "videoId": "F",
+        "views": "G",
+        "duration": "H",
+        "channelId": "I",
+        "channel_name": "J",
+        "channel_subs": "K",
+        "likes": "L",
+        "publish_date": "M",
+        "channel_username": "T",
+    },
+    "TikTok": {
+        "source_url": "A",
+        "title": "B",
+        "views": "C",
+        "duration": "D",
+        "likes": "F",
+        "comments": "G",
+        "upload_date": "H",
+        "profile_url": "L",
+        "author_name": "M",
+        "subscribers": "N",
+        "channel_username": "V",
+    },
+    "Dailymotion": {
+        "source_url": "A",
+        "title": "B",
+        "views": "C",
+        "duration": "D",
+        "likes": "F",
+        "upload_date": "H",
+        "channel_url": "L",
+        "channel_name": "M",
+        "subscribers": "N",
+        "channel_username": "V",
+    },
+    "Ok.ru": {
+        "source_url": "A",
+        "title": "B",
+        "views": "C",
+        "duration": "D",
+        "likes": "F",
+        "upload_date": "H",
+        "channel_url": "L",
+        "channel_name": "M",
+        "subscribers": "N",
+        "channel_username": "V",
+    }
+}
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(name, callback_data=name)] for name in PLATFORMS]
     await update.message.reply_text(
@@ -52,31 +112,58 @@ async def platform_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     platform = query.data
     context.user_data['platform'] = platform
     await query.edit_message_text(
-        f"Send me the list of URLs (one per line) for {platform}:"
+        f"You selected {platform}.\nSend me URLs line-by-line or upload an Excel file with URLs."
     )
-    return GET_URLS
+    return GET_INPUT
 
-async def urls_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    platform_name = context.user_data.get('platform')
-    scraper_func = PLATFORMS.get(platform_name)
-    urls = [url.strip() for url in update.message.text.strip().splitlines() if url.strip()]
+def extract_urls_from_excel(file_bytes):
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes))
+    ws = wb.active
+    urls = []
+    url_col_idx = None
+    for cell in ws[1]:
+        if cell.value and "url" in str(cell.value).lower():
+            url_col_idx = cell.column - 1  # zero based index
+            break
+    if url_col_idx is None:
+        return []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        val = row[url_col_idx]
+        if val:
+            urls.append(str(val))
+    return urls
 
-    # Validate URLs against platform regex
-    pattern = URL_PATTERNS.get(platform_name)
-    invalid_urls = [url for url in urls if not pattern.match(url)]
+async def input_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    platform = context.user_data.get('platform')
+    scraper_func = PLATFORMS.get(platform)
 
-    if invalid_urls:
-        await update.message.reply_text(
-            f"The following URLs are invalid for {platform_name}:\n"
-            + "\n".join(invalid_urls)
-            + "\nPlease send valid URLs only."
-        )
-        return GET_URLS
+    urls = []
+    if update.message.document:
+        doc = update.message.document
+        if not doc.file_name.lower().endswith(('.xls', '.xlsx')):
+            await update.message.reply_text("Please upload an Excel file (.xls or .xlsx).")
+            return GET_INPUT
+        file_obj = await doc.get_file()
+        file_bytes = await file_obj.download_as_bytearray()
+        urls = extract_urls_from_excel(file_bytes)
+        if not urls:
+            await update.message.reply_text("Could not extract URLs from Excel file.")
+            return GET_INPUT
+    else:
+        urls = [url.strip() for url in update.message.text.strip().splitlines() if url.strip()]
 
-    await update.message.reply_text(f"Processing {len(urls)} URLs for {platform_name}... Please wait.")
+    if platform != "Domain Extractor":
+        pattern = URL_PATTERNS.get(platform)
+        invalid_urls = [u for u in urls if not pattern.match(u)]
+        if invalid_urls:
+            await update.message.reply_text(
+                "Invalid URLs:\n" + "\n".join(invalid_urls) + "\nPlease send valid URLs."
+            )
+            return GET_INPUT
 
-    # Special case for domain extractor
-    if platform_name == "Domain Extractor":
+    await update.message.reply_text(f"Scraping {len(urls)} URLs for {platform}...")
+
+    if platform == "Domain Extractor":
         rows = [{"URL": url, "Domain": extract_domain(url)} for url in urls]
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=["URL", "Domain"])
@@ -86,42 +173,43 @@ async def urls_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_document(document=output, filename="domains.csv")
         return ConversationHandler.END
 
-    # For all platform scrapers
     try:
         results = await scraper_func(urls)
     except Exception as e:
-        logger.exception(f"Error scraping {platform_name}:")
+        logger.exception(f"Error scraping {platform}: {e}")
         await update.message.reply_text(f"Error during scraping: {e}")
         return ConversationHandler.END
 
     if not results:
-        await update.message.reply_text("No data was scraped from the provided URLs.")
+        await update.message.reply_text("No data scraped.")
         return ConversationHandler.END
 
-    # CSV formatting
-    first = results[0]
-    if isinstance(first, dict):
-        headers = list(first.keys())
-        data_rows = results
-        writer_func = csv.DictWriter
-    else:
-        headers = [f"Field{i+1}" for i in range(len(first))]
-        data_rows = results
-        writer_func = csv.writer
+    template_path = TEMPLATE_FILES.get(platform)
+    if not template_path or not os.path.isfile(template_path):
+        await update.message.reply_text("Template file missing for this platform.")
+        return ConversationHandler.END
 
-    output = io.StringIO()
-    if writer_func == csv.DictWriter:
-        writer = writer_func(output, fieldnames=headers)
-        writer.writeheader()
-        writer.writerows(data_rows)
-    else:
-        writer = writer_func(output)
-        writer.writerow(headers)
-        writer.writerows(data_rows)
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+
+    mapping = fields_mapping.get(platform)
+    if not mapping:
+        await update.message.reply_text("No field mapping found for this platform.")
+        return ConversationHandler.END
+
+    start_row = 2
+    for i, row_data in enumerate(results, start=start_row):
+        for field, col in mapping.items():
+            val = row_data.get(field, "N/A")
+            ws[f"{col}{i}"].value = val
+
+    output = io.BytesIO()
+    wb.save(output)
     output.seek(0)
 
-    await update.message.reply_document(document=output, filename=f"{platform_name.replace(' ', '_')}_output.csv")
-    await update.message.reply_text("Here is your CSV file. Use /start to scrape again!")
+    file_name = f"{platform.replace(' ', '_')}_scraped_output.xlsx"
+    await update.message.reply_document(document=output, filename=file_name)
+    await update.message.reply_text("Here is your Excel file. Use /start to scrape again!")
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -131,16 +219,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
-        logger.error("Missing TELEGRAM_BOT_TOKEN environment variable.")
+        logger.error("Missing TELEGRAM_BOT_TOKEN")
         return
 
-    # Create bot instance and ensure no webhook is set
     bot = Bot(token=TOKEN)
     try:
-        # Try to delete webhook before starting polling (ignore errors)
         bot.delete_webhook(drop_pending_updates=True)
-    except Exception as e:
-        logger.info("Webhook deletion not required or failed gracefully.")
+    except Exception:
+        pass
 
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -148,14 +234,14 @@ def main():
         entry_points=[CommandHandler("start", start)],
         states={
             SELECT_PLATFORM: [CallbackQueryHandler(platform_selected)],
-            GET_URLS: [MessageHandler(filters.TEXT & ~filters.COMMAND, urls_received)]
+            GET_INPUT: [MessageHandler((filters.TEXT | filters.Document.File) & ~filters.COMMAND, input_received)]
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True
     )
 
     app.add_handler(conv)
-    logger.info("Bot is running!")
+    logger.info("Bot is running")
     app.run_polling(allowed_updates=None)
 
 if __name__ == "__main__":

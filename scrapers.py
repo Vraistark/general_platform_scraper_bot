@@ -100,18 +100,17 @@ async def youtube_scraper(urls):
             duration_fmt = format_duration_ISO8601(details.get("duration", "")) if "duration" in details else "00:00:00"
             stats = video.get("statistics", {})
             results.append({
+                "source_url": f"https://www.youtube.com/watch?v={video['id']}",
                 "title": video["snippet"].get("title", ""),
                 "videoId": video["id"],
                 "views": stats.get("viewCount", "0"),
                 "duration": duration_fmt,
                 "channelId": channel_id,
-                "channelName": channel_map.get(channel_id, {}).get("name", ""),
-                "channelSubs": channel_map.get(channel_id, {}).get("subs", "0"),
+                "channel_name": channel_map.get(channel_id, {}).get("name", ""),
+                "channel_subs": channel_map.get(channel_id, {}).get("subs", "0"),
                 "likes": stats.get("likeCount", "0"),
-                "dislikes": stats.get("dislikeCount", "0"),
-                "publishDate": video["snippet"].get("publishedAt", "").split("T")[0],
-                "channelUsername": channel_map.get(channel_id, {}).get("username", ""),
-                "thumbnail": video["snippet"].get("thumbnails", {}).get("high", {}).get("url", "")
+                "publish_date": video["snippet"].get("publishedAt", "").split("T")[0],
+                "channel_username": channel_map.get(channel_id, {}).get("username", ""),
             })
     return results
 
@@ -128,7 +127,7 @@ def format_duration_tiktok(seconds):
 
 def format_date_tiktok(ts_ms):
     dt = datetime.fromtimestamp(ts_ms/1000)
-    return dt.strftime("%d-%m-%Y")
+    return dt.strftime("%H:%M:%S %d-%m-%Y")
 
 async def tikwm_scraper(urls):
     results = []
@@ -138,30 +137,65 @@ async def tikwm_scraper(urls):
                 api_url = f"{TIKWM_API}?url={url}"
                 async with session.get(api_url) as resp:
                     if resp.status != 200:
-                        results.append(["N/A"] * 9)
+                        results.append({
+                            "source_url": url,
+                            "title": "N/A",
+                            "views": "N/A",
+                            "duration": "00:00:00",
+                            "likes": "N/A",
+                            "comments": "N/A",
+                            "upload_date": "N/A",
+                            "profile_url": "N/A",
+                            "author_name": "N/A",
+                            "subscribers": "N/A",
+                            "channel_username": "N/A"
+                        })
                         continue
                     data = await resp.json()
                     if not data.get("data"):
-                        results.append(["N/A"] * 9)
+                        results.append({
+                            "source_url": url,
+                            "title": "N/A",
+                            "views": "N/A",
+                            "duration": "00:00:00",
+                            "likes": "N/A",
+                            "comments": "N/A",
+                            "upload_date": "N/A",
+                            "profile_url": "N/A",
+                            "author_name": "N/A",
+                            "subscribers": "N/A",
+                            "channel_username": "N/A"
+                        })
                         continue
                     d = data["data"]
                     author = d.get("author", {})
-                    profile_url = f"https://www.tiktok.com/@{author.get('unique_id')}" if author.get("unique_id") else "N/A"
-                    subs = author.get("follower_count", "N/A")
-
-                    results.append([
-                        d.get("title", "N/A"),
-                        d.get("play_count", "N/A"),
-                        format_duration_tiktok(d.get("duration", 0)),
-                        d.get("digg_count", "N/A"),
-                        d.get("comment_count", "N/A"),
-                        format_date_tiktok(d.get("create_time", 0) * 1000),
-                        profile_url,
-                        author.get("nickname", "N/A"),
-                        subs,
-                    ])
+                    results.append({
+                        "source_url": url,
+                        "title": d.get("title", "N/A"),
+                        "views": d.get("play_count", "N/A"),
+                        "duration": format_duration_tiktok(d.get("duration", 0)),
+                        "likes": d.get("digg_count", "N/A"),
+                        "comments": d.get("comment_count", "N/A"),
+                        "upload_date": format_date_tiktok(d.get("create_time", 0) * 1000),
+                        "profile_url": f"https://www.tiktok.com/@{author.get('unique_id')}" if author.get("unique_id") else "N/A",
+                        "author_name": author.get("nickname", "N/A"),
+                        "subscribers": author.get("follower_count", "N/A"),
+                        "channel_username": author.get("nickname", "N/A")  # Assuming username same as author name
+                    })
             except Exception:
-                results.append(["Error"] * 9)
+                results.append({
+                    "source_url": url,
+                    "title": "Error",
+                    "views": "Error",
+                    "duration": "00:00:00",
+                    "likes": "Error",
+                    "comments": "Error",
+                    "upload_date": "Error",
+                    "profile_url": "Error",
+                    "author_name": "Error",
+                    "subscribers": "Error",
+                    "channel_username": "Error"
+                })
     return results
 
 
@@ -170,46 +204,74 @@ async def tikwm_scraper(urls):
 async def dailymotion_scraper(urls):
     results = []
     api_base = 'https://api.dailymotion.com/video/'
-    user_base = 'https://api.dailymotion.com/user/'
 
     async with aiohttp.ClientSession() as session:
         for url in urls:
             try:
                 video_id = re.sub(r'https://www\.dailymotion\.com/video/', '', url)
-                video_url = api_base + video_id + '?fields=id,title,description,created_time,duration,views_total,likes_total,owner,tags'
+                video_url = api_base + video_id + '?fields=id,title,created_time,duration,views_total,likes_total,owner'
                 async with session.get(video_url) as resp:
                     if resp.status != 200:
-                        results.append({"error": f"Error fetching video {video_id}"})
+                        results.append({
+                            "source_url": url,
+                            "title": "N/A",
+                            "upload_date": "N/A",
+                            "duration": "00:00:00",
+                            "views": "N/A",
+                            "likes": "N/A",
+                            "channel_name": "N/A",
+                            "channel_url": "N/A",
+                            "subscribers": "N/A",
+                            "channel_username": "N/A"
+                        })
                         continue
                     video_data = await resp.json()
 
+                created_time = video_data.get("created_time", None)
+                upload_date = datetime.utcfromtimestamp(created_time).strftime('%Y-%m-%d') if created_time else "N/A"
+
                 owner_id = video_data.get("owner", "")
-                channel_name = ""
-                following_total = ""
+                channel_name = "N/A"
+                channel_url = "N/A"
                 if owner_id:
-                    async with session.get(user_base + owner_id + '?fields=id,username,following_total') as owner_resp:
+                    user_api = f'https://api.dailymotion.com/user/{owner_id}?fields=username,url'
+                    async with session.get(user_api) as owner_resp:
                         if owner_resp.status == 200:
                             owner_data = await owner_resp.json()
-                            channel_name = owner_data.get("username", "")
-                            following_total = owner_data.get("following_total", "")
+                            channel_name = owner_data.get("username", "N/A")
+                            channel_url = owner_data.get("url", "N/A")
+
+                duration_sec = video_data.get("duration", 0)
+                hours = int(duration_sec // 3600)
+                minutes = int((duration_sec % 3600) // 60)
+                seconds = int(duration_sec % 60)
+                duration_fmt = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
                 results.append({
-                    "id": video_data.get("id", ""),
-                    "title": video_data.get("title", ""),
-                    "description": video_data.get("description", ""),
-                    "created_time": datetime.utcfromtimestamp(video_data.get("created_time", 0)).strftime('%Y-%m-%d %H:%M:%S') if video_data.get("created_time") else "",
-                    "duration": video_data.get("duration",""),
-                    "views_total": video_data.get("views_total", ""),
-                    "likes_total": video_data.get("likes_total", ""),
-                    "owner": video_data.get("owner",""),
-                    "tags": ",".join(video_data.get("tags", [])),
+                    "source_url": url,
+                    "title": video_data.get("title", "N/A"),
+                    "upload_date": upload_date,
+                    "duration": duration_fmt,
+                    "views": video_data.get("views_total", "N/A"),
+                    "likes": video_data.get("likes_total", "N/A"),
                     "channel_name": channel_name,
-                    "following_total": following_total
+                    "channel_url": channel_url,
+                    "subscribers": "N/A",  # Field not available from API
+                    "channel_username": channel_name  # Using channel_name here
                 })
-
-            except Exception as e:
-                results.append({"error": str(e)})
-
+            except Exception:
+                results.append({
+                    "source_url": url,
+                    "title": "Error",
+                    "upload_date": "Error",
+                    "duration": "00:00:00",
+                    "views": "Error",
+                    "likes": "Error",
+                    "channel_name": "Error",
+                    "channel_url": "Error",
+                    "subscribers": "Error",
+                    "channel_username": "Error"
+                })
     return results
 
 
@@ -222,7 +284,18 @@ async def okru_scraper(urls):
             try:
                 async with session.get(url) as resp:
                     if resp.status != 200:
-                        results.append({"error": f"Status {resp.status}"})
+                        results.append({
+                            "source_url": url,
+                            "title": "N/A",
+                            "duration": "00:00:00",
+                            "views": "N/A",
+                            "channel_url": "N/A",
+                            "channel_name": "N/A",
+                            "subscribers": "N/A",
+                            "upload_date": "N/A",
+                            "likes": "N/A", 
+                            "channel_username": "N/A"
+                        })
                         continue
                     text = await resp.text()
 
@@ -232,15 +305,16 @@ async def okru_scraper(urls):
 
                     title = re_search(r'<meta property="og:title" content="([^"]+)"')
                     duration_str = re_search(r'class="vid-card_duration">([\d:]+)<\/div>')
-                    duration_parts = duration_str.split(":") if duration_str!="N/A" else []
+                    duration_parts = duration_str.split(":") if duration_str != "N/A" else []
                     if len(duration_parts) == 3:
                         h, m, s = map(int, duration_parts)
-                        duration = h*3600 + m*60 + s
+                        duration = f"{h:02d}:{m:02d}:{s:02d}"
                     elif len(duration_parts) == 2:
                         m, s = map(int, duration_parts)
-                        duration = m*60 + s
+                        duration = f"00:{m:02d}:{s:02d}"
                     else:
-                        duration = 0
+                        duration = "00:00:00"
+
                     upload_date = re_search(r'<meta property="video:release_date" content="([^"]+)"')
                     if upload_date == "N/A":
                         upload_date = re_search(r'"datePublished":"([^"]+)"')
@@ -252,20 +326,31 @@ async def okru_scraper(urls):
                     subscribers = re_search(r'subscriberscount="(\d+)"')
 
                     results.append({
-                        "url": url,
+                        "source_url": url,
                         "title": title,
-                        "duration_seconds": duration,
+                        "duration": duration,
                         "views": views,
                         "channel_url": channel_url,
                         "channel_name": channel_name,
                         "subscribers": subscribers,
-                        "upload_date": upload_date
+                        "upload_date": upload_date,
+                        "likes": "N/A",
+                        "channel_username": channel_name
                     })
-            except Exception as e:
-                results.append({"error": str(e)})
-
+            except Exception:
+                results.append({
+                    "source_url": url,
+                    "title": "Error",
+                    "duration": "00:00:00",
+                    "views": "Error",
+                    "channel_url": "Error",
+                    "channel_name": "Error",
+                    "subscribers": "Error",
+                    "upload_date": "Error",
+                    "likes": "Error",
+                    "channel_username": "Error"
+                })
     return results
-
 
 # -- Domain Extractor --
 
