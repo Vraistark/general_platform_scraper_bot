@@ -1,10 +1,11 @@
+# -*- coding: utf-8 -*-
 import re
 import asyncio
-import aiohttp # type: ignore
+import aiohttp
 from datetime import datetime
+from typing import List, Dict
 
-# -- YouTube Scraper --
-
+# YouTube Scraper
 YOUTUBE_API_KEYS = [
     "AIzaSyAuO4RUHSiW9blpNMfyuM2zY7PMQsN4hZk",
     "AIzaSyAHyyTn7dbxl_a0JoqWKGparSvVgDJV1bw",
@@ -114,9 +115,7 @@ async def youtube_scraper(urls):
             })
     return results
 
-
-# -- TikTok Scraper --
-
+# TikTok Scraper with Two Modes
 TIKWM_API = 'https://www.tikwm.com/api/'
 
 def format_duration_tiktok(seconds):
@@ -126,81 +125,175 @@ def format_duration_tiktok(seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 def format_date_tiktok(ts_ms):
-    dt = datetime.fromtimestamp(ts_ms/1000)
+    dt = datetime.fromtimestamp(ts_ms)
     return dt.strftime("%H:%M:%S %d-%m-%Y")
 
-async def tikwm_scraper(urls):
-    results = []
-    async with aiohttp.ClientSession() as session:
-        for url in urls:
+async def get_user_stats(session: aiohttp.ClientSession, username: str) -> int:
+    try:
+        api_url = f"{TIKWM_API}user/info?unique_id={username}"
+        async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status != 200:
+                return 0
+            data = await resp.json()
+            if data.get("data") and data["data"].get("user"):
+                user_data = data["data"]["user"]
+                followers = user_data.get("followerCount", 0)
+                return followers
+            return 0
+    except Exception:
+        return 0
+
+async def get_channel_videos(session: aiohttp.ClientSession, username: str, max_cursor: int = 0) -> Dict:
+    try:
+        api_url = f"{TIKWM_API}user/posts?unique_id={username}&count=35&cursor={max_cursor}"
+        async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            if resp.status != 200:
+                return {"videos": [], "has_more": False, "cursor": 0}
+            data = await resp.json()
+            if not data.get("data") or "videos" not in data["data"]:
+                return {"videos": [], "has_more": False, "cursor": 0}
+            videos = data["data"].get("videos", [])
+            has_more = data["data"].get("hasMore", False)
+            cursor = data["data"].get("cursor", 0)
+            return {"videos": videos, "has_more": has_more, "cursor": cursor}
+    except Exception as e:
+        print(f"Error fetching videos: {str(e)}")
+        return {"videos": [], "has_more": False, "cursor": 0}
+
+async def extract_all_channel_videos(session: aiohttp.ClientSession, username: str) -> List[Dict]:
+    all_videos = []
+    cursor = 0
+    page = 1
+    print(f"📺 Extracting videos from @{username}")
+    followers = await get_user_stats(session, username)
+    
+    while True:
+        print(f"   Page {page}... ", end="", flush=True)
+        result = await get_channel_videos(session, username, cursor)
+        videos = result["videos"]
+        
+        if not videos:
+            print("No more videos")
+            break
+        
+        print(f"Found {len(videos)} videos")
+        
+        for video in videos:
             try:
-                api_url = f"{TIKWM_API}?url={url}"
-                async with session.get(api_url) as resp:
-                    if resp.status != 200:
-                        results.append({
-                            "source_url": url,
-                            "title": "N/A",
-                            "views": "N/A",
-                            "duration": "00:00:00",
-                            "likes": "N/A",
-                            "comments": "N/A",
-                            "upload_date": "N/A",
-                            "profile_url": "N/A",
-                            "author_name": "N/A",
-                            "subscribers": "N/A",
-                            "channel_username": "N/A"
-                        })
-                        continue
-                    data = await resp.json()
-                    if not data.get("data"):
-                        results.append({
-                            "source_url": url,
-                            "title": "N/A",
-                            "views": "N/A",
-                            "duration": "00:00:00",
-                            "likes": "N/A",
-                            "comments": "N/A",
-                            "upload_date": "N/A",
-                            "profile_url": "N/A",
-                            "author_name": "N/A",
-                            "subscribers": "N/A",
-                            "channel_username": "N/A"
-                        })
-                        continue
-                    d = data["data"]
-                    author = d.get("author", {})
-                    results.append({
-                        "source_url": url,
-                        "title": d.get("title", "N/A"),
-                        "views": d.get("play_count", "N/A"),
-                        "duration": format_duration_tiktok(d.get("duration", 0)),
-                        "likes": d.get("digg_count", "N/A"),
-                        "comments": d.get("comment_count", "N/A"),
-                        "upload_date": format_date_tiktok(d.get("create_time", 0) * 1000),
-                        "profile_url": f"https://www.tiktok.com/@{author.get('unique_id')}" if author.get("unique_id") else "N/A",
-                        "author_name": author.get("nickname", "N/A"),
-                        "subscribers": author.get("follower_count", "N/A"),
-                        "channel_username": author.get("nickname", "N/A")  # Assuming username same as author name
-                    })
-            except Exception:
-                results.append({
-                    "source_url": url,
-                    "title": "Error",
-                    "views": "Error",
-                    "duration": "00:00:00",
-                    "likes": "Error",
-                    "comments": "Error",
-                    "upload_date": "Error",
-                    "profile_url": "Error",
-                    "author_name": "Error",
-                    "subscribers": "Error",
-                    "channel_username": "Error"
-                })
+                video_id = video.get("video_id", "")
+                video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
+                video_data = {
+                    "source_url": video_url,
+                    "title": video.get("title", "N/A"),
+                    "views": video.get("play_count", 0),
+                    "duration": format_duration_tiktok(video.get("duration", 0)),
+                    "likes": video.get("digg_count", 0),
+                    "comments": video.get("comment_count", 0),
+                    "upload_date": format_date_tiktok(video.get("create_time", 0)),
+                    "profile_url": f"https://www.tiktok.com/@{username}",
+                    "author_name": video.get("author", {}).get("nickname", username),
+                    "subscribers": followers,
+                    "channel_username": username
+                }
+                all_videos.append(video_data)
+            except Exception as e:
+                print(f"   ⚠️ Error processing video: {str(e)}")
+                continue
+        
+        if not result["has_more"]:
+            break
+        cursor = result["cursor"]
+        page += 1
+        await asyncio.sleep(2)
+    
+    print(f"✓ Total videos extracted from @{username}: {len(all_videos)}")
+    return all_videos
+
+async def scrape_single_tiktok_url(session: aiohttp.ClientSession, url: str, index: int = 1, total: int = 1) -> Dict:
+    try:
+        url = url.strip('[]()').strip()
+        api_url = f"{TIKWM_API}?url={url}"
+        print(f"[{index}/{total}] ⏳ Scraping: {url}")
+        
+        async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            if resp.status != 200:
+                print(f"[{index}/{total}] ❌ HTTP {resp.status} for {url}")
+                return create_tiktok_error_entry(url, f"HTTP {resp.status}")
+            
+            data = await resp.json()
+            if "data" not in data or not data.get("data"):
+                error_msg = data.get("msg", "No data found")
+                print(f"[{index}/{total}] ❌ {error_msg}: {url}")
+                return create_tiktok_error_entry(url, error_msg)
+            
+            d = data["data"]
+            author = d.get("author", {})
+            username = author.get("unique_id", "")
+            
+            followers = 0
+            if username:
+                print(f"[{index}/{total}] 📊 Fetching follower count for @{username}...")
+                followers = await get_user_stats(session, username)
+            
+            result = {
+                "source_url": url,
+                "title": d.get("title", "N/A"),
+                "views": d.get("play_count", 0),
+                "duration": format_duration_tiktok(d.get("duration", 0)),
+                "likes": d.get("digg_count", 0),
+                "comments": d.get("comment_count", 0),
+                "upload_date": format_date_tiktok(d.get("create_time", 0)),
+                "profile_url": f"https://www.tiktok.com/@{username}" if username else "N/A",
+                "author_name": author.get("nickname", "N/A"),
+                "subscribers": followers,
+                "channel_username": username if username else "N/A"
+            }
+            
+            print(f"[{index}/{total}] ✓ Success: {result['title'][:40]}... (Followers: {followers:,})")
+            await asyncio.sleep(1.5)
+            return result
+    except asyncio.TimeoutError:
+        print(f"[{index}/{total}] ❌ Timeout: {url}")
+        return create_tiktok_error_entry(url, "Timeout")
+    except Exception as e:
+        print(f"[{index}/{total}] ❌ Error: {url} - {str(e)}")
+        return create_tiktok_error_entry(url, f"Error: {str(e)}")
+
+def create_tiktok_error_entry(url: str, error_type: str) -> Dict:
+    return {
+        "source_url": url, "title": error_type, "views": "N/A", "duration": "00:00:00",
+        "likes": "N/A", "comments": "N/A", "upload_date": "N/A", "profile_url": "N/A",
+        "author_name": "N/A", "subscribers": "N/A", "channel_username": "N/A"
+    }
+
+async def tiktok_post_details_scraper(urls: List[str]) -> List[Dict]:
+    results = []
+    total = len(urls)
+    async with aiohttp.ClientSession() as session:
+        for index, url in enumerate(urls, 1):
+            result = await scrape_single_tiktok_url(session, url, index, total)
+            results.append(result)
     return results
 
+async def tiktok_channel_posts_scraper(profile_urls: List[str]) -> List[Dict]:
+    all_results = []
+    usernames = []
+    for profile in profile_urls:
+        if profile:
+            if 'tiktok.com/@' in profile:
+                username = profile.split('@')[-1].split('/')[0].split('?')[0]
+            else:
+                username = profile.lstrip('@')
+            usernames.append(username)
+    
+    async with aiohttp.ClientSession() as session:
+        for username in usernames:
+            if username:
+                videos = await extract_all_channel_videos(session, username)
+                all_results.extend(videos)
+    return all_results
 
-# -- Dailymotion Scraper --
-
+# Dailymotion Scraper
 async def dailymotion_scraper(urls):
     results = []
     api_base = 'https://api.dailymotion.com/video/'
@@ -213,16 +306,9 @@ async def dailymotion_scraper(urls):
                 async with session.get(video_url) as resp:
                     if resp.status != 200:
                         results.append({
-                            "source_url": url,
-                            "title": "N/A",
-                            "upload_date": "N/A",
-                            "duration": "00:00:00",
-                            "views": "N/A",
-                            "likes": "N/A",
-                            "channel_name": "N/A",
-                            "channel_url": "N/A",
-                            "subscribers": "N/A",
-                            "channel_username": "N/A"
+                            "source_url": url, "title": "N/A", "upload_date": "N/A", "duration": "00:00:00",
+                            "views": "N/A", "likes": "N/A", "channel_name": "N/A", "channel_url": "N/A",
+                            "subscribers": "N/A", "channel_username": "N/A"
                         })
                         continue
                     video_data = await resp.json()
@@ -248,35 +334,22 @@ async def dailymotion_scraper(urls):
                 duration_fmt = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
                 results.append({
-                    "source_url": url,
-                    "title": video_data.get("title", "N/A"),
-                    "upload_date": upload_date,
-                    "duration": duration_fmt,
+                    "source_url": url, "title": video_data.get("title", "N/A"),
+                    "upload_date": upload_date, "duration": duration_fmt,
                     "views": video_data.get("views_total", "N/A"),
                     "likes": video_data.get("likes_total", "N/A"),
-                    "channel_name": channel_name,
-                    "channel_url": channel_url,
-                    "subscribers": "N/A",  # Field not available from API
-                    "channel_username": channel_name  # Using channel_name here
+                    "channel_name": channel_name, "channel_url": channel_url,
+                    "subscribers": "N/A", "channel_username": channel_name
                 })
             except Exception:
                 results.append({
-                    "source_url": url,
-                    "title": "Error",
-                    "upload_date": "Error",
-                    "duration": "00:00:00",
-                    "views": "Error",
-                    "likes": "Error",
-                    "channel_name": "Error",
-                    "channel_url": "Error",
-                    "subscribers": "Error",
-                    "channel_username": "Error"
+                    "source_url": url, "title": "Error", "upload_date": "Error", "duration": "00:00:00",
+                    "views": "Error", "likes": "Error", "channel_name": "Error", "channel_url": "Error",
+                    "subscribers": "Error", "channel_username": "Error"
                 })
     return results
 
-
-# -- ok.ru Scraper --
-
+# OK.ru Scraper
 async def okru_scraper(urls):
     results = []
     async with aiohttp.ClientSession() as session:
@@ -285,16 +358,9 @@ async def okru_scraper(urls):
                 async with session.get(url) as resp:
                     if resp.status != 200:
                         results.append({
-                            "source_url": url,
-                            "title": "N/A",
-                            "duration": "00:00:00",
-                            "views": "N/A",
-                            "channel_url": "N/A",
-                            "channel_name": "N/A",
-                            "subscribers": "N/A",
-                            "upload_date": "N/A",
-                            "likes": "N/A", 
-                            "channel_username": "N/A"
+                            "source_url": url, "title": "N/A", "duration": "00:00:00", "views": "N/A",
+                            "channel_url": "N/A", "channel_name": "N/A", "subscribers": "N/A",
+                            "upload_date": "N/A", "likes": "N/A", "channel_username": "N/A"
                         })
                         continue
                     text = await resp.text()
@@ -326,40 +392,14 @@ async def okru_scraper(urls):
                     subscribers = re_search(r'subscriberscount="(\d+)"')
 
                     results.append({
-                        "source_url": url,
-                        "title": title,
-                        "duration": duration,
-                        "views": views,
-                        "channel_url": channel_url,
-                        "channel_name": channel_name,
-                        "subscribers": subscribers,
-                        "upload_date": upload_date,
-                        "likes": "N/A",
-                        "channel_username": channel_name
+                        "source_url": url, "title": title, "duration": duration, "views": views,
+                        "channel_url": channel_url, "channel_name": channel_name, "subscribers": subscribers,
+                        "upload_date": upload_date, "likes": "N/A", "channel_username": channel_name
                     })
             except Exception:
                 results.append({
-                    "source_url": url,
-                    "title": "Error",
-                    "duration": "00:00:00",
-                    "views": "Error",
-                    "channel_url": "Error",
-                    "channel_name": "Error",
-                    "subscribers": "Error",
-                    "upload_date": "Error",
-                    "likes": "Error",
-                    "channel_username": "Error"
+                    "source_url": url, "title": "Error", "duration": "00:00:00", "views": "Error",
+                    "channel_url": "Error", "channel_name": "Error", "subscribers": "Error",
+                    "upload_date": "Error", "likes": "Error", "channel_username": "Error"
                 })
     return results
-
-# -- Domain Extractor --
-
-def extract_domain(url):
-    try:
-        regex = r'^(?:https?:\/\/)?(?:www\.)?([^\/\n?]+)'
-        match = re.match(regex, url)
-        if match:
-            return match.group(1)
-    except:
-        pass
-    return ""
